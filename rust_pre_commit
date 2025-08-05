@@ -1,0 +1,95 @@
+#!/bin/sh
+#
+
+printf "Running pre-commit checks...\n"
+
+# From example hook script provided by Git:
+
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+	against=HEAD
+else
+	# Initial commit: diff against an empty tree object
+	against=$(git hash-object -t tree /dev/null)
+fi
+
+# If you want to allow non-ASCII filenames set this variable to true.
+allownonascii=$(git config --type=bool hooks.allownonascii)
+
+# Redirect output to stderr.
+exec 1>&2
+
+# Cross platform projects tend to avoid non-ASCII filenames; prevent
+# them from being added to the repository. We exploit the fact that the
+# printable range starts at the space character and ends with tilde.
+if [ "$allownonascii" != "true" ] &&
+	# Note that the use of brackets around a tr range is ok here, (it's
+	# even required, for portability to Solaris 10's /usr/bin/tr), since
+	# the square bracket bytes happen to fall in the designated range.
+	test $(git diff --cached --name-only --diff-filter=A -z $against |
+	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+then
+    printf "file name check: ..... ❌\n"
+	cat <<EOF
+Error: Attempt to add a non-ASCII file name.
+This can cause problems if you want to work with people on other platforms.
+To be portable it is advisable to rename the file.
+If you know what you are doing you can disable this check using:
+  git config hooks.allownonascii true
+EOF
+	exit 1
+fi
+printf "file name check: ..... ✅\n"
+
+
+if ! git diff --quiet; then
+    printf "no unstaged changes: . ❌\n"
+    printf "Pre-commit: Unstaged changes detected in the working tree.\n"
+    printf "Please stage, stash, or discard all changes before committing.\n"
+    exit 1
+fi
+printf "no unstaged changes: . ✅\n"
+
+# If there are whitespace errors, print the offending file names and fail.
+git_check_output=$(git diff-index --check --cached $against --)
+if [ -n "$git_check_output" ]; then
+    printf "whitespace check: .... ❌\n"
+    printf "Pre-commit: Whitespace issues found in staged changes:\n"
+    printf "%s\n" "$git_check_output" | cut -d':' -f1 | uniq | sed 's/^/ - /'
+    exit 1
+fi
+printf "whitespace check: .... ✅\n"
+
+# cargo check hook
+if ! cargo check --workspace; then
+    printf "cargo check: ......... ❌\n"
+    printf "Pre-commit: Issues detected when calling 'cargo check'.\n"
+    exit 1
+fi
+printf "cargo check: ......... ✅\n"
+
+# cargo rustfmt hook
+if ! cargo fmt -- --check; then
+    printf "cargo rustfmt: ....... ❌\n"
+    printf "Pre-commit: Code style issues detected with rustfmt.\n"
+    exit 1
+fi
+printf "cargo rustfmt: ....... ✅\n"
+
+# cargo clippy hook
+if ! cargo clippy --all-targets -- -D warnings; then
+    printf "cargo clippy: ........ ❌\n"
+    printf "Pre-commit: Issues detected by clippy.\n"
+    exit 1
+fi
+printf "cargo clippy: ........ ✅\n"
+
+# cargo test hook
+if ! cargo test; then
+    printf "cargo test: .......... ❌\n"
+    printf "Pre-commit: Issues were detected when running the test suite.\n"
+    exit 1
+fi
+printf "cargo test: .......... ✅\n"
+
+printf "\nSuccess: All pre-commit checks passed ✅\n"
